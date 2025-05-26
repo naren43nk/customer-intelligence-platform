@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 # ---- Load Data ----
 @st.cache_data
 def load_data():
-    segments = pd.read_csv('../data/final_dashboard_dataset.csv')
-    recs = pd.read_csv('../data/customer_recommendations.csv', index_col=0)
+    segments = pd.read_csv('dashboard/final_dashboard_dataset.csv')
+    recs = pd.read_csv('dashboard/customer_recommendations.csv', index_col=0)
     return segments, recs
 
 @st.cache_resource
