@@ -13,7 +13,7 @@ def load_data():
 
 @st.cache_resource
 def load_model():
-    return joblib.load('../model/churn_model_lightgbm.pkl')
+    return joblib.load('model/churn_model_lightgbm.pkl')
 
 segments_df, recs_df = load_data()
 churn_model = load_model()
