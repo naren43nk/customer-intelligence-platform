@@ -4,9 +4,20 @@ import joblib
 import random
 import matplotlib.pyplot as plt
 import plotly.express as px
+import shap
 
 # ---------- PAGE SETUP ----------
 st.set_page_config(page_title="Customer Intelligence Dashboard", layout="wide")
+
+# ---------- DARK MODE TOGGLE ----------
+dark_mode = st.sidebar.checkbox("Dark Mode")
+if dark_mode:
+    st.markdown("""
+        <style>
+        body, .stApp { background-color: #1e1e1e; color: #dcdcdc; }
+        .st-bb, .st-cd, .st-bo, .st-bn { background-color: #2c2c2c !important; color: #dcdcdc; }
+        </style>
+    """, unsafe_allow_html=True)
 
 # ---------- LOAD DATA ----------
 @st.cache_data
@@ -19,129 +30,138 @@ def load_data():
 def load_model():
     return joblib.load('model/churn_model_lightgbm.pkl')
 
+@st.cache_resource
+def get_shap_explainer(_model, background_df):
+    return shap.Explainer(_model, background_df)
+
 segments_df, recs_df = load_data()
 churn_model = load_model()
 
 # ---------- SIDEBAR NAVIGATION ----------
-st.sidebar.title("🧭 Navigation")
-page = st.sidebar.radio("Go to", ["🏠 Dashboard", "📉 Churn Prediction", "📦 Recommendations", "📁 Upload Data", "ℹ️ About"])
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Dashboard", "Churn Prediction", "Batch Prediction", "Recommendations", "Upload Data", "About"])
 
-# ---------- HEADER ----------
-st.title("🧠 Customer Intelligence Dashboard")
-st.markdown("Gain actionable insights into customer churn, segmentation, and product recommendations.")
-
-# ---------- KPI METRICS ----------
-if page == "🏠 Dashboard":
+# ---------- DASHBOARD ----------
+if page == "Dashboard":
+    st.title("Customer Intelligence Dashboard")
+    st.markdown("Gain actionable insights into customer churn, segmentation, and product recommendations.")
+    
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Customers", f"{segments_df['CustomerID'].nunique()}")
     col2.metric("Avg. Basket Size", f"{segments_df['AvgBasketSize'].mean():.2f}")
     col3.metric("Avg. Days Between Purchases", f"{segments_df['AvgDaysBetweenPurchases'].mean():.1f}")
-    col4.metric("Churn Rate (est.)", f"{(segments_df['Cancelled'].mean() * 100):.2f} %")
+    col4.metric("Churn Rate (est.)", f"{(segments_df['CancellationRate'].mean() * 100):.2f} %")
 
-    # Segment Distribution Pie Chart
-    st.subheader("📊 Customer Segment Breakdown")
+    st.subheader("Customer Segment Breakdown")
     fig2, ax2 = plt.subplots()
     segments_df['Segment'].value_counts().plot.pie(autopct='%1.1f%%', startangle=90, ax=ax2)
     ax2.set_ylabel('')
     st.pyplot(fig2)
 
 # ---------- CHURN PREDICTION ----------
-elif page == "📉 Churn Prediction":
-    st.subheader("⚠️ Predict Churn for a Customer")
+elif page == "Churn Prediction":
+    st.title("Churn Prediction")
 
-    if st.button("🎲 Pick Random Customer"):
+    if st.button("Pick Random Customer"):
         selected_customer = random.choice(segments_df['CustomerID'].unique())
     else:
         selected_customer = st.selectbox("Select CustomerID", sorted(segments_df['CustomerID'].unique()))
 
-    segment_row = segments_df[segments_df['CustomerID'] == selected_customer]
-    st.markdown(f"**Segment:** {segment_row['Segment'].values[0]}")
+    row = segments_df[segments_df['CustomerID'] == selected_customer]
+    segment = row['Segment'].values[0]
+    st.markdown(f"**Segment:** {segment}")
 
     try:
-        churn_features = segment_row[['Frequency', 'Monetary', 'TotalProductsPurchased',
-                                      'UniqueProducts', 'AvgBasketSize', 'AvgDaysBetweenPurchases',
-                                      'DaysSinceFirstPurchase', 'CancellationRate']]
-        prob = churn_model.predict_proba(churn_features)[0][1]
-        st.write(f"🔮 **Churn Probability:** `{prob:.2%}`")
+        features = row[['Frequency', 'Monetary', 'TotalProductsPurchased', 'UniqueProducts',
+                        'AvgBasketSize', 'AvgDaysBetweenPurchases', 'DaysSinceFirstPurchase', 'CancellationRate']]
+        prob = churn_model.predict_proba(features)[0][1]
+        st.markdown(f"**Churn Probability:** `{prob:.2%}`")
 
         if prob > 0.8:
-            st.error("🔴 Very High Risk of churn")
+            st.error("Very High Risk of churn")
+            if segment == "Loyal Customers":
+                st.info("Note: Loyal customers can still churn if their behavior drops significantly.")
+            st.markdown("💡 **Action:** Send a personalized retention offer or loyalty bonus. Follow-up with a feedback request.")
         elif prob > 0.5:
-            st.warning("🟠 Moderate Risk")
+            st.warning("Moderate Risk")
+            st.markdown("💡 **Action:** Target with an engagement campaign or reminder about unused benefits.")
         else:
-            st.success("🟢 Low Risk of churn")
+            st.success("Low Risk of churn")
+            st.markdown("✅ **Action:** Continue current engagement strategy, consider upselling opportunities.")
+    except Exception as e:
+        st.warning(f"Prediction failed: {e}")
+        features = None
 
-    except Exception:
-        st.warning("Churn prediction not available for this customer.")
-        import shap
+    if features is not None:
+        st.subheader("Why this customer is at risk (SHAP)")
+        try:
+            background = segments_df[['Frequency', 'Monetary', 'TotalProductsPurchased', 'UniqueProducts',
+                                      'AvgBasketSize', 'AvgDaysBetweenPurchases', 'DaysSinceFirstPurchase',
+                                      'CancellationRate']].sample(100, random_state=42)
+            explainer = get_shap_explainer(churn_model, background)
+            shap_values = explainer(features)
 
-# Load explainer only once
-@st.cache_resource
-def get_shap_explainer(model, background_df):
-    return shap.Explainer(model, background_df)
+            try:
+                fig, ax = plt.subplots()
+                shap.plots.waterfall(shap_values[0], max_display=8, show=False)
+                st.pyplot(fig)
+            except:
+                fig_bar, ax = plt.subplots()
+                shap.plots.bar(shap_values[0], show=False)
+                st.pyplot(fig_bar)
+        except Exception as e:
+            st.warning(f"SHAP failed: {e}")
 
-st.subheader("🧠 Why this Customer is at Risk? (SHAP)")
-
-try:
-    background = segments_df[['Frequency', 'Monetary', 'TotalProductsPurchased',
-                              'UniqueProducts', 'AvgBasketSize', 'AvgDaysBetweenPurchases',
-                              'DaysSinceFirstPurchase', 'CancellationRate']].sample(100, random_state=42)
-    
-    explainer = get_shap_explainer(churn_model, background)
-    shap_values = explainer(churn_features)
-
-    st.set_option('deprecation.showPyplotGlobalUse', False)
-    st.pyplot(shap.plots.waterfall(shap_values[0]))
-except Exception as e:
-    st.warning("⚠️ SHAP explanation not available for this customer.")
-
-
-    # 📉 Histogram of Churn Probabilities
-    st.subheader("Churn Probability Distribution (All Customers)")
-    try:
-        churn_features_all = segments_df[['Frequency', 'Monetary', 'TotalProductsPurchased',
-                                          'UniqueProducts', 'AvgBasketSize', 'AvgDaysBetweenPurchases',
-                                          'DaysSinceFirstPurchase', 'CancellationRate']]
-        all_probs = churn_model.predict_proba(churn_features_all)[:, 1]
-        fig = px.histogram(all_probs, nbins=30, title="Churn Probability Distribution", labels={'value': 'Churn Probability'})
-        st.plotly_chart(fig, use_container_width=True)
-    except:
-        st.warning("Could not generate churn distribution chart.")
+# ---------- BATCH PREDICTION ----------
+elif page == "Batch Prediction":
+    st.title("Batch Churn Prediction")
+    uploaded = st.file_uploader("Upload CSV", type="csv")
+    if uploaded is not None:
+        try:
+            df = pd.read_csv(uploaded)
+            input_data = df[['Frequency', 'Monetary', 'TotalProductsPurchased', 'UniqueProducts',
+                             'AvgBasketSize', 'AvgDaysBetweenPurchases', 'DaysSinceFirstPurchase',
+                             'CancellationRate']]
+            df['Churn_Probability'] = churn_model.predict_proba(input_data)[:, 1]
+            st.dataframe(df)
+            st.download_button("Download Predictions", df.to_csv(index=False), file_name="churn_batch_output.csv")
+        except Exception as e:
+            st.error(f"Prediction failed: {e}")
 
 # ---------- RECOMMENDATIONS ----------
-elif page == "📦 Recommendations":
-    st.subheader("🎯 Product Recommendations")
-
+elif page == "Recommendations":
+    st.title("Product Recommendations")
     selected_customer = st.selectbox("Select CustomerID", sorted(segments_df['CustomerID'].unique()), key="rec")
-
     if selected_customer in recs_df.index:
-        recommended_items = recs_df.loc[selected_customer].dropna().tolist()
-        if recommended_items:
-            st.success("🧾 Recommended Products:")
-            for item in recommended_items:
+        items = recs_df.loc[selected_customer].dropna().tolist()
+        if items:
+            st.success("Recommended Products:")
+            for item in items:
                 st.markdown(f"- {item}")
         else:
-            st.info("No new product recommendations.")
+            st.info("No new recommendations.")
     else:
-        st.warning("No recommendations found for this customer.")
+        st.warning("No recommendations for this customer.")
 
 # ---------- UPLOAD DATA ----------
-elif page == "📁 Upload Data":
-    st.subheader("📁 Upload Your Own Customer CSV")
-    uploaded_file = st.file_uploader("Upload CSV", type="csv")
-    if uploaded_file is not None:
-        user_df = pd.read_csv(uploaded_file)
-        st.dataframe(user_df)
+elif page == "Upload Data":
+    st.title("Upload Data")
+    uploaded = st.file_uploader("Upload your CSV", type="csv")
+    if uploaded:
+        df = pd.read_csv(uploaded)
+        st.dataframe(df)
 
 # ---------- ABOUT ----------
-elif page == "ℹ️ About":
-    st.subheader("About This Dashboard")
+elif page == "About":
+    st.title("About")
     st.markdown("""
     **Built by Narendran Mohan**  
-    This dashboard is designed for customer churn prediction, segment exploration, and personalized product recommendations using real purchase behavior.
+    This dashboard predicts customer churn, explains predictions using SHAP, and recommends actions to retain high-risk customers.
 
-    📍 Data Source: Internal simulated customer data  
-    📚 Model: LightGBM  
-    📦 ML Tools: Pandas, Scikit-learn, SHAP, Plotly, Streamlit  
+    **Key Features**
+    - Churn prediction with LightGBM  
+    - Segment-based insights  
+    - SHAP explainability with fallback  
+    - Batch churn prediction + CSV export  
+    - Dark mode UI toggle
     """)
-
